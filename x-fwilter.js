@@ -64,8 +64,6 @@
                 justify-content: center;
                 width: 32px;
                 height: 32px;
-                background-color: rgba(0, 0, 0, 0.45);
-                backdrop-filter: blur(12px);
                 border: 1px solid #cfd9de;
                 border-radius: 50%;
                 cursor: pointer;
