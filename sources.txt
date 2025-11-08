@@ -1,0 +1,10 @@
+https://www.svgrepo.com/collection/brankic-glyph-icons/
+COLLECTION: Brankic Glyph Icons
+LICENSE: PD License
+AUTHOR: brankic1979
+
+https://www.svgrepo.com/svg/485724/film1
+https://www.svgrepo.com/svg/485638/book1
+https://www.svgrepo.com/svg/485654/camera1
+https://www.svgrepo.com/svg/485875/retweet
+https://www.svgrepo.com/svg/485863/profile
