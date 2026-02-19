@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name         X-Fwilter
 // @namespace    http://tampermonkey.net/
-// @version      1.0
-// @description  Filter away self-reposts, videos, images, texts, ..
+// @version      1.2
+// @description  Filter away retweets, self-retweets, videos, images, texts, ..
 // @author       TheFeThrone
 // @match        https://x.com/*
 // @exclude      *://x.com/i/*
@@ -11,46 +11,63 @@
 // @exclude      *://x.com/settings/*
 // @icon         https://www.google.com/s2/favicons?sz=64&domain=x.com
 // @run-at       document-start
+// @resource retweet https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/retweet.svg
+// @resource selftweet https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/selfretweet.svg
+// @resource video https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/film.svg
+// @resource image https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/image.svg
+// @resource text https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/book.svg
 // @grant        GM_addStyle
+// @grant        GM_getResourceURL
+// @downloadURL https://update.greasyfork.org/scripts/555162/X-Fwilter.user.js
+// @updateURL https://update.greasyfork.org/scripts/555162/X-Fwilter.meta.js
 // ==/UserScript==
 
-(function() {
+(async function() {
     'use strict';
 
     // --- CONSTANTS & CONFIG ---
 
     const FILTERS = {
-        SelfPost: 'self',
+        Retweet: 'retweet',
+        Selftweet: 'selftweet',
         Video: 'video',
         Image: 'image',
         Text: 'text'
     };
 
     const ICONS = {
-        retweet: "https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/selfretweet.svg",
-        video: "https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/film.svg",
-        image: "https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/image.svg",
-        text: "https://raw.githubusercontent.com/TheFeThrone/X-Fwilter/refs/heads/main/icons/book.svg"
+        retweet: GM_getResourceURL("retweet"),
+        selftweet: GM_getResourceURL("selftweet"),
+        video: GM_getResourceURL("video"),
+        image: GM_getResourceURL("image"),
+        text: GM_getResourceURL("text")
     };
 
     const FILTER_ICON_MAP = {
-        SelfPost: 'retweet',
+        Retweet: 'retweet',
+        Selftweet: 'selftweet',
         Video: 'video',
         Image: 'image',
         Text: 'text'
     };
 
-    let dynamicStyleElement = null;
-
     // --- STYLE MANAGEMENT ---
+    let stylesInjected = false;
 
     function setupStyles() {
+        if (stylesInjected) return;
+        stylesInjected = true;
         GM_addStyle(`
             .fwilter-wrapper {
                 display: flex;
                 flex-direction: column;
                 align-items: center;
-                position: sticky;
+                // position: sticky;
+                // display: grid;
+                position: fixed;
+                gap: 0.5em;
+                left: 0;
+                top: 5em;
             }
             #fwilter {
                 display: flex;
@@ -84,7 +101,7 @@
                 background-color: #E0245E;
             }
 
-            #fwilter input[type="checkbox"] + label::before:hover {
+            #fwilter input[type="checkbox"] + label:hover::before {
                 background-color: violet;
             }
         `);
@@ -101,13 +118,37 @@
         document.head.appendChild(iconStyleElement);
     }
 
+    let dynamicStyleElement = null;
     function updateFilterStyles() {
         let cssToApply = '';
+
+        const wrapper = document.querySelector('#fwilter');
+        const videoChecked = document.getElementById('Video')?.checked;
+        const imageChecked = document.getElementById('Image')?.checked;
+
         for (const [checkboxId, filterType] of Object.entries(FILTERS)) {
             const checkbox = document.getElementById(checkboxId);
-            if (checkbox && checkbox.checked) {
-                cssToApply += `[data-testid="cellInnerDiv"][fwilter-types~="${filterType}"] { display: none; }\n`;
+            if (!checkbox || !checkbox.checked) continue;
+
+            // Special handling for video
+            if (filterType === 'video' && !imageChecked) {
+                cssToApply += `
+                [data-testid="cellInnerDiv"][fwilter-types~="video"]:not([fwilter-types~="image"]) { display: none; }\n`;
+                continue;
             }
+
+            // Special handling for image
+            if (filterType === 'image' && !videoChecked) {
+                cssToApply += `
+                [data-testid="cellInnerDiv"][fwilter-types~="image"]:not([fwilter-types~="video"]) { display: none; }\n`;
+                continue;
+            }
+
+            // Default behaviour (retweet, selftweet, text, and also
+            // video/image when both are checked)
+            cssToApply += `
+            [data-testid="cellInnerDiv"][fwilter-types~="${filterType}"]
+            { display: none; }\n`;
         }
         if (!dynamicStyleElement) {
             dynamicStyleElement = document.createElement('style');
@@ -145,15 +186,37 @@
         });
     }
 
+    async function waitForMedia(tweetMedia) {
+        return new Promise(resolve => {
+            if (tweetMedia.querySelector('video, img')) return resolve();
+
+            const observer = new MutationObserver(() => {
+                if (tweetMedia.querySelector('video, img')) {
+                    observer.disconnect();
+                    resolve();
+                }
+            });
+
+            observer.observe(tweetMedia, { childList: true, subtree: true });
+        });
+    }
+
     /**
      * Finds tweet that is self-repost.
      * @param {HTMLElement} tweet - The tweet element.
      * @returns {boolean} - True if the tweet was hidden.
      */
-    function isSelfRepost(tweet) {
+    function isSelftweet(tweet) {
         const poster = tweet.querySelector('[data-testid="User-Name"] span span')?.textContent;
         const reposter = tweet.querySelector('[data-testid="socialContext"] span')?.textContent;
-        if (poster && reposter && reposter.includes(poster)) {
+        if (poster && reposter && reposter.trim() === poster.trim()) {
+            return true;
+        }
+        return false;
+    }
+    function isRetweet(tweet) {
+        const retweet = tweet.querySelector('[data-testid="socialContext"] span')?.textContent;
+        if (retweet) {
             return true;
         }
         return false;
@@ -164,26 +227,31 @@
      * Main processing function for each tweet.
      * @param {HTMLElement} tweet - The tweet element.
      */
-    function processTweet(tweet) {
+    async function processTweet(tweet) {
         const types = [];
 
-        if (isSelfRepost(tweet)) {
-            types.push('self');
+        if (isSelftweet(tweet)) {
+            types.push('selftweet', 'retweet');
+        } else if (isRetweet(tweet)) {
+            types.push('retweet');
         }
 
-        const tweetMedia = tweet.querySelector('div[data-testid="tweetPhoto"]');
-        if (tweetMedia) {
-            const hasVideo = tweetMedia.querySelector('video, [data-testid="previewInterstitial"]');
-            const hasImage = tweetMedia.querySelector('img:not([src*="profile_images"]');
-
-            if (hasVideo) {
-                types.push('video');
-            } else if (hasImage) {
-                types.push('image');
-            }
-        } else {
+        const tweetText = tweet.querySelector('div[data-testid="tweetText"]');
+        const tweetMedia = tweet.querySelector('div[data-testid="tweetPhoto"]').closest('[aria-labelledby]');
+        if(tweetText && !tweetMedia) {
             types.push('text');
+            tweet.setAttribute('fwilter-types', types.join(' '));
+            return;
         }
+
+        if (tweetMedia) await waitForMedia(tweetMedia);
+
+        const hasVideo = tweetMedia?.querySelector('video, [data-testid="previewInterstitial"], [alt="Embedded video"]');
+        const hasImage = tweetMedia?.querySelector('img:not([src*="profile_images"], [alt="Embedded video"])');
+
+        if (hasVideo) types.push('video');
+        if (hasImage) types.push('image');
+        if (!hasVideo && !hasImage) types.push('text');
 
         tweet.setAttribute('fwilter-types', types.join(' '));
     }
@@ -192,11 +260,10 @@
         const timeline = await getTimeline();
         const first = await waitForElement('[data-testid="cellInnerDiv"]', timeline);
         if (first) {
-            const tweets = Array.from(document.querySelectorAll('[data-testid="cellInnerDiv"]'));
-            if(tweets.length==0) {
-                return;
-            }
-            //showStatus("Processing existing tweets");
+            const tweets = document.querySelectorAll('[data-testid="cellInnerDiv"]:not([fwilter-types])');
+
+            if(tweets.length==0) return;
+
             for (const tweet of tweets) {
                 await processTweet(tweet);
             }
@@ -207,11 +274,13 @@
 
     async function createUI() {
         const timeline = await getTimeline();
-        let uiBase = document.querySelector('[data-testid="primaryColumn"] .css-175oi2r.r-1awozwy.r-18u37iz.r-h3s6tt.r-1777fci.r-f8sm7e.r-13qz1uu.r-gu64tb');
-        if (!uiBase || !uiBase.childNodes) {
-            // Profile case
-            const timelineTabs = document.getElementsByClassName("TimelineTabs");
-            if (timelineTabs.length > 0) uiBase = timelineTabs[0];
+        const uiBase = await waitForElement('.TimelineTabs, [data-testid="primaryColumn"] .css-175oi2r.r-1awozwy.r-18u37iz.r-h3s6tt.r-1777fci.r-f8sm7e.r-13qz1uu.r-gu64tb');
+        const finalBase = document.querySelector('[role="banner"]')
+        if (!uiBase) console.log("not found uiBase");
+        const existingUI = finalBase.querySelector('div#fwilter');
+        if (existingUI) {
+            console.log("existed UI");
+            return;
         }
         // 1. Create a new wrapper for UI
         const flexWrapper = document.createElement('div');
@@ -225,7 +294,7 @@
         }
 
         flexWrapper.appendChild(fwilterContainer);
-        uiBase.appendChild(flexWrapper);
+        finalBase.appendChild(flexWrapper);
 
     }
 
@@ -251,32 +320,80 @@
     }
     // --- FILTERING LOGIC ---
 
-    function init() {
-        createUI();
+    async function init() {
         setupStyles();
         updateFilterStyles();
-        setTimeout( async function() {
+        await createUI();
+        await start();
+    }
+    const runInit = () => { init(); };
+
+    async function start(){
+        clearTimers();
+        disconnectObservers();
+
+        initTimeoutId = setTimeout( async () => {
             const timeline = await getTimeline();
             if (timeline) {
                 feedObserver.observe(document.body, { childList: true, subtree: true });
-                await processExisting();
+                unprocessedIntervalId = setInterval(processExisting, 500);
             }
         }, 1000);
-         // Run once on startup to apply initial filter state
     }
 
+    let unprocessedIntervalId = null;
+    let initTimeoutId = null;
+    let observedTweets = [];
+
+    function clearTimers(){
+        if (unprocessedIntervalId) clearInterval(unprocessedIntervalId);
+        if (initTimeoutId) clearTimeout(initTimeoutId);
+    }
+
+    function disconnectObservers(){
+        feedObserver.disconnect();
+        if (observedTweets.length != 0) {
+            observedTweets.forEach( tweet => unobserveTweet(tweet) );
+        }
+        tweetObserver.disconnect();
+    }
+
+    function unobserveTweet(tweet){
+        tweetObserver.unobserve(tweet);
+        const index = observedTweets.indexOf(tweet);
+        if (index > -1) { observedTweets.splice(index, 1); }
+    }
+    function observeTweet(tweet){
+        observedTweets.push(tweet);
+        tweetObserver.observe(tweet);
+    }
+
+    // X-Navigation Override
+    function overrideXNav(){
+        const pushStateOrig = history.pushState;
+        const replaceStateOrig = history.replaceState;
+        history.pushState = function(...args) {
+            pushStateOrig.apply(this, args);
+            console.log("pushState");
+            runInit();
+        }
+        history.replaceState = function(...args) {
+            replaceStateOrig.apply(this, args);
+            console.log("replaceState");
+            runInit();
+        }
+        window.addEventListener('popstate', runInit);
+    }
 
     // --- OBSERVERS ---
-
-
     const tweetObserver = new IntersectionObserver(async (entries) => {
         for (const entry of entries) {
             if (!entry.isIntersecting) continue;
             const tweet = entry.target;
             await processTweet(tweet);
-            tweetObserver.unobserve(tweet);
+            unobserveTweet(tweet);
         }
-    }, { root: document, rootMargin: "5px 0px" });
+    }, { root: null, rootMargin: "5px 0px" });
 
     const feedObserver = new MutationObserver(async (mutations) => {
         for (const mutation of mutations) {
@@ -285,11 +402,11 @@
                     const tweets =
                           node.matches('[data-testid="cellInnerDiv"]') ? [node] :
                           node.querySelectorAll('[data-testid="cellInnerDiv"]');
-                    tweets.forEach( async tweet => {
-                        if(!tweet.dataset.uncropid) {
-                            tweetObserver.observe(tweet);
-                        }
-                    });
+
+                    if(tweets.length==0) continue;
+                    for (const tweet of tweets) {
+                        observeTweet(tweet);
+                    }
                 }
             }
         }
@@ -299,6 +416,7 @@
         return await waitForElement('[aria-label*="Timeline"]');
     }
 
+    overrideXNav();
 
-    init();
+    await init();
 })();
